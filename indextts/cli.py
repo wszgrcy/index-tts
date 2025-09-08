@@ -1,6 +1,7 @@
 import os
 import sys
 import warnings
+from indextts.infer_v2 import IndexTTS2
 # Suppress warnings from tensorflow and other libraries
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)

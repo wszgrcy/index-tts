@@ -27,3 +27,5 @@ textstat
 
 WeTextProcessing; platform_machine == "Linux"
 wetext; platform_system != "Linux"
+
+einops===0.8.1
