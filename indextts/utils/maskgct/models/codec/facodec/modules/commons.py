@@ -207,7 +207,7 @@ def load_F0_models(path):
 
     F0_model = JDCNet(num_class=1, seq_len=192)
     if not os.path.exists(path):
-        path = hf_hub_download(repo_id="Plachta/JDCnet", filename="bst.t7")
+        path = os.path.join( os.environ.get('MODEL_DIR'), "Plachta/JDCnet", "bst.t7")
     params = torch.load(path, map_location="cpu")["net"]
     F0_model.load_state_dict(params)
     _ = F0_model.train()

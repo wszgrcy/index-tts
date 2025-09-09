@@ -434,17 +434,10 @@ class BigVGAN(
             print("Loading config.json from local directory")
             config_file = os.path.join(model_id, "config.json")
         else:
-            config_file = hf_hub_download(
-                repo_id=model_id,
-                filename="config.json",
-                revision=revision,
-                cache_dir=cache_dir,
-                force_download=force_download,
-                proxies=proxies,
-                resume_download=resume_download,
-                token=token,
-                local_files_only=local_files_only,
-            )
+            config_file = os.path.join(os.environ.get('MODEL_DIR'),
+                                       model_id,
+                                       "config.json",
+                                       )
         h = load_hparams_from_json(config_file)
 
         # instantiate BigVGAN using h
@@ -466,16 +459,10 @@ class BigVGAN(
             model_file = os.path.join(model_id, "bigvgan_generator.pt")
         else:
             print(f"Loading weights from {model_id}")
-            model_file = hf_hub_download(
-                repo_id=model_id,
-                filename="bigvgan_generator.pt",
-                revision=revision,
-                cache_dir=cache_dir,
-                force_download=force_download,
-                proxies=proxies,
-                resume_download=resume_download,
-                token=token,
-                local_files_only=local_files_only,
+            model_file = os.path.join(
+                os.environ.get('MODEL_DIR'),
+                model_id,
+                "bigvgan_generator.pt",
             )
 
         checkpoint_dict = torch.load(model_file, map_location=map_location)
