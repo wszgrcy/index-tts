@@ -103,7 +103,7 @@ class IndexTTS2:
                 print(">> Failed to load custom CUDA kernel for BigVGAN. Falling back to torch.")
                 self.use_cuda_kernel = False
 
-        self.extract_features = SeamlessM4TFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
+        self.extract_features = SeamlessM4TFeatureExtractor.from_pretrained(os.path.join(os.environ.get('MODEL_DIR'),"facebook/w2v-bert-2.0"))
         self.semantic_model, self.semantic_mean, self.semantic_std = build_semantic_model(
             os.path.join(self.model_dir, self.cfg.w2v_stat))
         self.semantic_model = self.semantic_model.to(self.device)
@@ -144,7 +144,7 @@ class IndexTTS2:
         print(">> campplus_model weights restored from:", campplus_ckpt_path)
 
         bigvgan_name = self.cfg.vocoder.name
-        self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=False)
+        self.bigvgan = bigvgan.BigVGAN.from_pretrained(os.path.join(os.environ.get('MODEL_DIR'),bigvgan_name), use_cuda_kernel=False)
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
