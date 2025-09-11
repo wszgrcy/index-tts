@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import sys
 import threading
@@ -17,12 +16,18 @@ sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
 
 import argparse
-parser = argparse.ArgumentParser(description="IndexTTS WebUI")
+parser = argparse.ArgumentParser(
+    description="IndexTTS WebUI",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+)
 parser.add_argument("--verbose", action="store_true", default=False, help="Enable verbose mode")
 parser.add_argument("--port", type=int, default=7860, help="Port to run the web UI on")
 parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the web UI on")
-parser.add_argument("--model_dir", type=str, default="checkpoints", help="Model checkpoints directory")
-parser.add_argument("--is_fp16", action="store_true", default=False, help="Fp16 infer")
+parser.add_argument("--model_dir", type=str, default="./checkpoints", help="Model checkpoints directory")
+parser.add_argument("--fp16", action="store_true", default=False, help="Use FP16 for inference if available")
+parser.add_argument("--deepspeed", action="store_true", default=False, help="Use DeepSpeed to accelerate if available")
+parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
+parser.add_argument("--gui_seg_tokens", type=int, default=120, help="GUI: Max tokens per generation segment")
 cmd_args = parser.parse_args()
 
 if not os.path.exists(cmd_args.model_dir):
@@ -42,15 +47,17 @@ for file in [
         sys.exit(1)
 
 import gradio as gr
-from indextts import infer
 from indextts.infer_v2 import IndexTTS2
 from tools.i18n.i18n import I18nAuto
-from modelscope.hub import api
 
 i18n = I18nAuto(language="Auto")
 MODE = 'local'
-tts = IndexTTS2(model_dir=cmd_args.model_dir, cfg_path=os.path.join(cmd_args.model_dir, "config.yaml"),is_fp16=cmd_args.is_fp16)
-
+tts = IndexTTS2(model_dir=cmd_args.model_dir,
+                cfg_path=os.path.join(cmd_args.model_dir, "config.yaml"),
+                use_fp16=cmd_args.fp16,
+                use_deepspeed=cmd_args.deepspeed,
+                use_cuda_kernel=cmd_args.cuda_kernel,
+                )
 # 支持的语言列表
 LANGUAGES = {
     "中文": "zh_CN",
@@ -96,7 +103,7 @@ def gen_single(emo_control_method,prompt, text,
                emo_ref_path, emo_weight,
                vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8,
                emo_text,emo_random,
-               max_text_tokens_per_sentence=120,
+               max_text_tokens_per_segment=120,
                 *args, progress=gr.Progress()):
     output_path = None
     if not output_path:
@@ -119,28 +126,33 @@ def gen_single(emo_control_method,prompt, text,
     }
     if type(emo_control_method) is not int:
         emo_control_method = emo_control_method.value
-    if emo_control_method == 0:
-        emo_ref_path = None
+    if emo_control_method == 0:  # emotion from speaker
+        emo_ref_path = None  # remove external reference audio
         emo_weight = 1.0
-    if emo_control_method == 1:
-        emo_weight = emo_weight
-    if emo_control_method == 2:
+    if emo_control_method == 1:  # emotion from reference audio
+        # emo_weight = emo_weight
+        pass
+    if emo_control_method == 2:  # emotion from custom vectors
         vec = [vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8]
-        vec_sum = sum([vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8])
-        if vec_sum > 1.5:
+        if sum(vec) > 1.5:
             gr.Warning(i18n("情感向量之和不能超过1.5，请调整后重试。"))
             return
     else:
+        # don't use the emotion vector inputs for the other modes
         vec = None
 
-    print(f"Emo control mode:{emo_control_method},vec:{vec}")
+    if emo_text == "":
+        # erase empty emotion descriptions; `infer()` will then automatically use the main prompt
+        emo_text = None
+
+    print(f"Emo control mode:{emo_control_method},weight:{emo_weight},vec:{vec}")
     output = tts.infer(spk_audio_prompt=prompt, text=text,
                        output_path=output_path,
                        emo_audio_prompt=emo_ref_path, emo_alpha=emo_weight,
                        emo_vector=vec,
                        use_emo_text=(emo_control_method==3), emo_text=emo_text,use_random=emo_random,
                        verbose=cmd_args.verbose,
-                       max_text_tokens_per_sentence=int(max_text_tokens_per_sentence),
+                       max_text_tokens_per_segment=int(max_text_tokens_per_segment),
                        **kwargs)
     return gr.update(value=output,visible=True)
 
@@ -156,6 +168,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
 <a href='https://arxiv.org/abs/2506.21619'><img src='https://img.shields.io/badge/ArXiv-2506.21619-red'></a>
 </p>
     ''')
+
     with gr.Tab(i18n("音频生成")):
         with gr.Row():
             os.makedirs("prompts",exist_ok=True)
@@ -181,12 +194,9 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
             with gr.Row():
                 emo_upload = gr.Audio(label=i18n("上传情感参考音频"), type="filepath")
 
-            with gr.Row():
-                emo_weight = gr.Slider(label=i18n("情感权重"), minimum=0.0, maximum=1.6, value=0.8, step=0.01)
-
         # 情感随机采样
-        with gr.Row():
-            emo_random = gr.Checkbox(label=i18n("情感随机采样"),value=False,visible=False)
+        with gr.Row(visible=False) as emotion_randomize_group:
+            emo_random = gr.Checkbox(label=i18n("情感随机采样"), value=False)
 
         # 情感向量控制部分
         with gr.Group(visible=False) as emotion_vector_group:
@@ -204,7 +214,10 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
 
         with gr.Group(visible=False) as emo_text_group:
             with gr.Row():
-                emo_text = gr.Textbox(label=i18n("情感描述文本"), placeholder=i18n("请输入情感描述文本"), value="", info=i18n("例如：高兴，愤怒，悲伤等"))
+                emo_text = gr.Textbox(label=i18n("情感描述文本"), placeholder=i18n("请输入情绪描述（或留空以自动使用目标文本作为情绪描述）"), value="", info=i18n("例如：高兴，愤怒，悲伤等"))
+
+        with gr.Row(visible=False) as emo_weight_group:
+            emo_weight = gr.Slider(label=i18n("情感权重"), minimum=0.0, maximum=1.6, value=0.8, step=0.01)
 
         with gr.Accordion(i18n("高级生成参数设置"), open=False):
             with gr.Row():
@@ -227,14 +240,15 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 with gr.Column(scale=2):
                     gr.Markdown(f'**{i18n("分句设置")}** _{i18n("参数会影响音频质量和生成速度")}_')
                     with gr.Row():
-                        max_text_tokens_per_sentence = gr.Slider(
-                            label=i18n("分句最大Token数"), value=120, minimum=20, maximum=tts.cfg.gpt.max_text_tokens, step=2, key="max_text_tokens_per_sentence",
+                        initial_value = max(20, min(tts.cfg.gpt.max_text_tokens, cmd_args.gui_seg_tokens))
+                        max_text_tokens_per_segment = gr.Slider(
+                            label=i18n("分句最大Token数"), value=initial_value, minimum=20, maximum=tts.cfg.gpt.max_text_tokens, step=2, key="max_text_tokens_per_segment",
                             info=i18n("建议80~200之间，值越大，分句越长；值越小，分句越碎；过小过大都可能导致音频质量不高"),
                         )
-                    with gr.Accordion(i18n("预览分句结果"), open=True) as sentences_settings:
-                        sentences_preview = gr.Dataframe(
+                    with gr.Accordion(i18n("预览分句结果"), open=True) as segments_settings:
+                        segments_preview = gr.Dataframe(
                             headers=[i18n("序号"), i18n("分句内容"), i18n("Token数")],
-                            key="sentences_preview",
+                            key="segments_preview",
                             wrap=True,
                         )
             advanced_params = [
@@ -256,45 +270,49 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                         vec1,vec2,vec3,vec4,vec5,vec6,vec7,vec8]
             )
 
-    def on_input_text_change(text, max_tokens_per_sentence):
+    def on_input_text_change(text, max_text_tokens_per_segment):
         if text and len(text) > 0:
             text_tokens_list = tts.tokenizer.tokenize(text)
 
-            sentences = tts.tokenizer.split_sentences(text_tokens_list, max_tokens_per_sentence=int(max_tokens_per_sentence))
+            segments = tts.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment=int(max_text_tokens_per_segment))
             data = []
-            for i, s in enumerate(sentences):
-                sentence_str = ''.join(s)
+            for i, s in enumerate(segments):
+                segment_str = ''.join(s)
                 tokens_count = len(s)
-                data.append([i, sentence_str, tokens_count])
+                data.append([i, segment_str, tokens_count])
             return {
-                sentences_preview: gr.update(value=data, visible=True, type="array"),
+                segments_preview: gr.update(value=data, visible=True, type="array"),
             }
         else:
             df = pd.DataFrame([], columns=[i18n("序号"), i18n("分句内容"), i18n("Token数")])
             return {
-                sentences_preview: gr.update(value=df),
+                segments_preview: gr.update(value=df),
             }
     def on_method_select(emo_control_method):
-        if emo_control_method == 1:
+        if emo_control_method == 1:  # emotion reference audio
             return (gr.update(visible=True),
                     gr.update(visible=False),
                     gr.update(visible=False),
-                    gr.update(visible=False)
+                    gr.update(visible=False),
+                    gr.update(visible=True)
                     )
-        elif emo_control_method == 2:
+        elif emo_control_method == 2:  # emotion vectors
             return (gr.update(visible=False),
                     gr.update(visible=True),
-                    gr.update(visible=True),
-                    gr.update(visible=False)
-                    )
-        elif emo_control_method == 3:
-            return (gr.update(visible=False),
                     gr.update(visible=True),
                     gr.update(visible=False),
                     gr.update(visible=True)
                     )
-        else:
+        elif emo_control_method == 3:  # emotion text description
             return (gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=True)
+                    )
+        else:  # 0: same as speaker voice
+            return (gr.update(visible=False),
+                    gr.update(visible=False),
                     gr.update(visible=False),
                     gr.update(visible=False),
                     gr.update(visible=False)
@@ -303,20 +321,21 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
     emo_control_method.select(on_method_select,
         inputs=[emo_control_method],
         outputs=[emotion_reference_group,
-                 emo_random,
+                 emotion_randomize_group,
                  emotion_vector_group,
-                 emo_text_group]
+                 emo_text_group,
+                 emo_weight_group]
     )
 
     input_text_single.change(
         on_input_text_change,
-        inputs=[input_text_single, max_text_tokens_per_sentence],
-        outputs=[sentences_preview]
+        inputs=[input_text_single, max_text_tokens_per_segment],
+        outputs=[segments_preview]
     )
-    max_text_tokens_per_sentence.change(
+    max_text_tokens_per_segment.change(
         on_input_text_change,
-        inputs=[input_text_single, max_text_tokens_per_sentence],
-        outputs=[sentences_preview]
+        inputs=[input_text_single, max_text_tokens_per_segment],
+        outputs=[segments_preview]
     )
     prompt_audio.upload(update_prompt_audio,
                          inputs=[],
@@ -326,7 +345,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                      inputs=[emo_control_method,prompt_audio, input_text_single, emo_upload, emo_weight,
                             vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8,
                              emo_text,emo_random,
-                             max_text_tokens_per_sentence,
+                             max_text_tokens_per_segment,
                              *advanced_params,
                      ],
                      outputs=[output_audio])
